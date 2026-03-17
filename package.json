@@ -1,0 +1,10 @@
+{
+  "scripts": {
+    "dev": "python3 -m http.server 8080"
+  },
+  "dependencies": {
+    "jsdom": "^29.0.0",
+    "pdf-lib": "^1.17.1",
+    "puppeteer": "^24.39.1"
+  }
+}
