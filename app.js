@@ -446,14 +446,31 @@ function renderBlocks(script) {
 
 function buildBlockEl(block) {
   const bt = BLOCK_TYPES[block.type] || BLOCK_TYPES.custom;
+  if (!block.hiddenLayers) block.hiddenLayers = [];
   const el = document.createElement('div');
   el.className = 'script-block';
   el.dataset.id = block.id;
   el.style.setProperty('--block-color', bt.color);
+
+  // Short labels for the layer toggle pills
+  const LAYER_PILLS = {
+    spoken:     'Guion',
+    camera:     'Toma',
+    audio:      'Música',
+    screentext: 'Texto',
+    notes:      'Notas',
+  };
+
   el.innerHTML = `
     <div class="block-header">
       <span class="block-drag-handle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><circle cx="9" cy="5" r="1.2" fill="currentColor"/><circle cx="15" cy="5" r="1.2" fill="currentColor"/><circle cx="9" cy="12" r="1.2" fill="currentColor"/><circle cx="15" cy="12" r="1.2" fill="currentColor"/><circle cx="9" cy="19" r="1.2" fill="currentColor"/><circle cx="15" cy="19" r="1.2" fill="currentColor"/></svg></span>
       <span class="block-type-badge"><span class="block-type-emoji">${bt.emoji}</span>${bt.label}</span>
+      <div class="block-layer-toggles">
+        ${LAYERS.map(layer => {
+          const hidden = block.hiddenLayers.includes(layer.id);
+          return `<button class="block-layer-toggle${hidden ? '' : ' active'}" data-layer="${layer.id}" data-block-id="${block.id}" title="${hidden ? 'Mostrar' : 'Ocultar'} ${LAYER_PILLS[layer.id]}">${LAYER_PILLS[layer.id]}</button>`;
+        }).join('')}
+      </div>
       <span class="block-duration">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
         <input class="block-duration-input" type="number" min="1" max="600" value="${block.duration||bt.defaultDuration}" data-id="${block.id}" title="Duración en segundos" />s
@@ -463,12 +480,20 @@ function buildBlockEl(block) {
       </button>
     </div>
     <div class="block-body">
-      ${LAYERS.map(layer => `
-        <div class="block-layer" data-layer="${layer.id}">
+      ${LAYERS.map(layer => {
+        const hidden = block.hiddenLayers.includes(layer.id);
+        return `
+        <div class="block-layer${hidden ? ' hidden-layer' : ''}" data-layer="${layer.id}">
           <div class="layer-label">${layer.label}</div>
           <textarea class="layer-textarea layer-${layer.id}" data-block-id="${block.id}" data-layer="${layer.id}" placeholder="${layer.placeholder}" rows="2">${block.layers?.[layer.id] || ''}</textarea>
-        </div>
-      `).join('')}
+          <button class="layer-mic-btn" data-block-id="${block.id}" data-layer="${layer.id}" title="Dictar por voz">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg>
+          </button>
+          <button class="layer-clear-btn" data-block-id="${block.id}" data-layer="${layer.id}" title="Limpiar ${layer.label.replace(':','').replace('::','').trim()}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>`;
+      }).join('')}
     </div>`;
 
   // Duration input
@@ -485,6 +510,27 @@ function buildBlockEl(block) {
     autoResize(ta);
   });
 
+  // Layer mic buttons (voice dictation)
+  el.querySelectorAll('.layer-mic-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      toggleDictation(btn.dataset.blockId, btn.dataset.layer, el);
+    });
+  });
+
+  // Layer clear buttons
+  el.querySelectorAll('.layer-clear-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      clearBlockLayer(btn.dataset.blockId, btn.dataset.layer, el);
+    });
+  });
+
+  // Per-block layer toggle pills
+  el.querySelectorAll('.block-layer-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      toggleBlockLayer(btn.dataset.blockId, btn.dataset.layer, el);
+    });
+  });
+
   // Menu button
   el.querySelector('.block-menu-btn').addEventListener('click', e => {
     showContextMenu(e, block.id);
@@ -496,6 +542,133 @@ function buildBlockEl(block) {
 function autoResize(ta) {
   ta.style.height = 'auto';
   ta.style.height = Math.max(60, ta.scrollHeight) + 'px';
+}
+
+// ============================================================
+// VOICE DICTATION ENGINE
+// ============================================================
+let activeRecognition = null;  // currently running SpeechRecognition instance
+let activeMicBtn     = null;   // the button element currently recording
+let activeTa         = null;   // the textarea receiving speech
+
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+function toggleDictation(blockId, layerId, blockEl) {
+  // If already recording in THIS layer → stop
+  const micBtn = blockEl.querySelector(`.layer-mic-btn[data-layer="${layerId}"]`);
+  if (activeRecognition && activeMicBtn === micBtn) {
+    stopDictation();
+    return;
+  }
+
+  // Stop any existing session first
+  stopDictation();
+
+  if (!SpeechRecognition) {
+    toast('Tu navegador no soporta dictado por voz. Usa Chrome o Edge.', 'danger', 4000);
+    return;
+  }
+
+  const ta = blockEl.querySelector(`.layer-textarea[data-layer="${layerId}"]`);
+  if (!ta) return;
+
+  // Mark the active mic button & textarea
+  activeMicBtn = micBtn;
+  activeTa     = ta;
+
+  const recognition = new SpeechRecognition();
+  recognition.lang         = 'es-MX';   // Spanish (Mexico) — matches the app locale
+  recognition.interimResults = true;     // Show partial results while speaking
+  recognition.continuous   = true;       // Keep listening until explicitly stopped
+  recognition.maxAlternatives = 1;
+
+  activeRecognition = recognition;
+
+  // Visual feedback: recording state
+  micBtn.classList.add('recording');
+  micBtn.title = 'Detener dictado';
+
+  // Track the "committed" text (before current interim phrase)
+  const committedBase = ta.value;
+  let interimText = '';
+
+  recognition.addEventListener('result', e => {
+    let interim = '';
+    let newFinals = '';
+
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const text = e.results[i][0].transcript;
+      if (e.results[i].isFinal) {
+        newFinals += (newFinals || committedBase.endsWith(' ') || committedBase === '' ? '' : ' ') + text;
+      } else {
+        interim += text;
+      }
+    }
+
+    if (newFinals) {
+      // Append finalized text permanently to the textarea
+      const spacer = ta.value && !ta.value.endsWith(' ') ? ' ' : '';
+      ta.value = ta.value + spacer + newFinals.trim();
+      updateBlockLayer(blockId, layerId, ta.value);
+      autoResize(ta);
+      interimText = '';
+    }
+
+    // Show interim text as a preview (not saved yet)
+    if (interim) {
+      interimText = interim;
+      // Visually previewed but not stored – just show placeholder style
+      ta.dataset.interim = interim;
+      ta.style.opacity   = '.7';
+    } else {
+      delete ta.dataset.interim;
+      ta.style.opacity = '';
+    }
+  });
+
+  recognition.addEventListener('end', () => {
+    // Auto-restarted only if we're still "recording" this button
+    if (activeRecognition === recognition && activeMicBtn === micBtn) {
+      // continuous=true normally keeps going, but some browsers stop on silence;
+      // restart transparently so the user doesn't have to click again
+      try { recognition.start(); } catch(_) { stopDictation(); }
+    }
+  });
+
+  recognition.addEventListener('error', e => {
+    if (e.error === 'no-speech') return; // harmless
+    if (e.error === 'not-allowed') {
+      toast('Permiso de micrófono denegado. Habilítalo en el navegador.', 'danger', 4500);
+    } else {
+      toast(`Error de dictado: ${e.error}`, 'danger', 3000);
+    }
+    stopDictation();
+  });
+
+  try {
+    recognition.start();
+    toast('🎤 Dictando… Haz clic en el micrófono para detener.', 'success', 2500);
+  } catch(err) {
+    stopDictation();
+    toast('No se pudo iniciar el dictado.', 'danger');
+  }
+}
+
+function stopDictation() {
+  if (activeRecognition) {
+    try { activeRecognition.stop(); } catch(_) {}
+    activeRecognition = null;
+  }
+  if (activeMicBtn) {
+    activeMicBtn.classList.remove('recording');
+    activeMicBtn.title = 'Dictar por voz';
+    activeMicBtn = null;
+  }
+  if (activeTa) {
+    activeTa.style.opacity = '';
+    delete activeTa.dataset.interim;
+    activeTa = null;
+  }
 }
 
 // ============================================================
@@ -539,6 +712,49 @@ function updateBlockLayer(blockId, layerId, value) {
     block.layers[layerId] = value;
     debouncedSave();
   }
+}
+
+function clearBlockLayer(blockId, layerId, blockEl) {
+  const script = getCurrentScript();
+  if (!script) return;
+  const block = script.blocks.find(b => b.id === blockId);
+  if (!block) return;
+  if (!block.layers) block.layers = {};
+  block.layers[layerId] = '';
+  // Update only the textarea in place (no full re-render needed)
+  const ta = blockEl.querySelector(`.layer-textarea[data-layer="${layerId}"]`);
+  if (ta) { ta.value = ''; autoResize(ta); }
+  debouncedSave();
+}
+
+function toggleBlockLayer(blockId, layerId, blockEl) {
+  const script = getCurrentScript();
+  if (!script) return;
+  const block = script.blocks.find(b => b.id === blockId);
+  if (!block) return;
+  if (!block.hiddenLayers) block.hiddenLayers = [];
+
+  const isHidden = block.hiddenLayers.includes(layerId);
+  if (isHidden) {
+    // Show it
+    block.hiddenLayers = block.hiddenLayers.filter(l => l !== layerId);
+  } else {
+    // Hide it
+    block.hiddenLayers.push(layerId);
+  }
+
+  // Update pill button
+  const pill = blockEl.querySelector(`.block-layer-toggle[data-layer="${layerId}"]`);
+  if (pill) {
+    pill.classList.toggle('active', !block.hiddenLayers.includes(layerId));
+    pill.title = block.hiddenLayers.includes(layerId) ? `Mostrar ${pill.textContent}` : `Ocultar ${pill.textContent}`;
+  }
+
+  // Update layer row visibility
+  const layerRow = blockEl.querySelector(`.block-layer[data-layer="${layerId}"]`);
+  if (layerRow) layerRow.classList.toggle('hidden-layer', block.hiddenLayers.includes(layerId));
+
+  debouncedSave();
 }
 
 function addBlock(type) {
