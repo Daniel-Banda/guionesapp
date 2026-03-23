@@ -440,6 +440,8 @@ function renderBlocks(script) {
   script.blocks.forEach(block => {
     $blocksContainer.appendChild(buildBlockEl(block));
   });
+  // Auto-resize all textareas now that they are in the DOM (layout required for scrollHeight)
+  $blocksContainer.querySelectorAll('.layer-textarea').forEach(ta => autoResize(ta));
   initSortable();
   applyLayerVisibility();
 }
@@ -752,7 +754,14 @@ function toggleBlockLayer(blockId, layerId, blockEl) {
 
   // Update layer row visibility
   const layerRow = blockEl.querySelector(`.block-layer[data-layer="${layerId}"]`);
-  if (layerRow) layerRow.classList.toggle('hidden-layer', block.hiddenLayers.includes(layerId));
+  if (layerRow) {
+    const isHiddenNow = block.hiddenLayers.includes(layerId);
+    layerRow.classList.toggle('hidden-layer', isHiddenNow);
+    if (!isHiddenNow) {
+      const ta = layerRow.querySelector('.layer-textarea');
+      if (ta) autoResize(ta);
+    }
+  }
 
   debouncedSave();
 }
@@ -801,7 +810,12 @@ function deleteBlock(blockId) {
 function applyLayerVisibility() {
   document.querySelectorAll('.block-layer').forEach(el => {
     const layer = el.dataset.layer;
-    el.classList.toggle('hidden-layer', !state.activeLayers[layer]);
+    const isHiddenNow = !state.activeLayers[layer];
+    el.classList.toggle('hidden-layer', isHiddenNow);
+    if (!isHiddenNow) {
+      const ta = el.querySelector('.layer-textarea');
+      if (ta) autoResize(ta);
+    }
   });
 }
 

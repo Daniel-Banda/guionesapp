@@ -713,6 +713,8 @@ a { color: var(--accent); }
   line-height: 1.6;
   min-height: 40px;
   transition: color var(--transition);
+  resize: none;
+  overflow: hidden;
 }
 .layer-textarea:focus {
   outline: none;
